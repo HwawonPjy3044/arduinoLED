@@ -1,0 +1,192 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>RGB LED 원격 제어</title>
+<style>
+  * { box-sizing: border-box; }
+  body { font-family: sans-serif; max-width: 420px; margin: 0 auto; padding: 20px; text-align: center; color: #222; }
+  h2 { margin: 8px 0 14px; }
+  .chips { display: flex; gap: 8px; justify-content: center; flex-wrap: wrap; margin-bottom: 14px; }
+  .chip { font-size: 13px; padding: 4px 12px; border-radius: 14px; background: #ddd; color: #555; }
+  .chip.ok { background: #d8f3dc; color: #1b6b32; }
+  .chip.bad { background: #fde2e2; color: #a12; }
+  #login input { display: block; width: 100%; font-size: 16px; padding: 12px; margin: 10px 0; border: 1px solid #bbb; border-radius: 8px; }
+  #login button, #logout { font-size: 16px; padding: 12px 30px; border: 0; border-radius: 8px; background: #2a7de1; color: #fff; }
+  #logout { background: #999; font-size: 13px; padding: 6px 16px; margin-top: 26px; }
+  #msg { min-height: 20px; color: #a12; font-size: 14px; margin: 8px 0; }
+  #panel { display: none; }
+  #swatch { height: 90px; border-radius: 12px; background: #222; margin: 16px 0; }
+  #power { font-size: 22px; padding: 12px 40px; border: 0; border-radius: 24px; background: #999; color: #fff; }
+  #power.on { background: #2a7de1; }
+  .row { display: flex; align-items: center; gap: 10px; margin: 18px 0; }
+  .row b { width: 20px; }
+  .row input { flex: 1; height: 28px; }
+  .row span { width: 36px; text-align: right; }
+</style>
+</head>
+<body>
+
+<h2>RGB LED 원격 제어</h2>
+<div class="chips">
+  <span class="chip" id="chipBroker">브로커: 연결 안 됨</span>
+  <span class="chip" id="chipDevice">장치: 확인 전</span>
+</div>
+
+<!-- 로그인: 계정 정보는 코드에 넣지 않고 접속할 때 입력받는다 -->
+<form id="login">
+  <input id="user" type="text" placeholder="계정 이름" autocomplete="username" required>
+  <input id="pass" type="password" placeholder="비밀번호" autocomplete="current-password" required>
+  <button type="submit">접속</button>
+</form>
+<div id="msg"></div>
+
+<!-- 제어 화면: 접속에 성공하면 나타난다 -->
+<div id="panel">
+  <div id="swatch"></div>
+  <button id="power">OFF</button>
+  <div class="row"><b style="color:#e33">R</b><input type="range" id="r" min="0" max="255" value="255"><span id="rv">255</span></div>
+  <div class="row"><b style="color:#2a2">G</b><input type="range" id="g" min="0" max="255" value="255"><span id="gv">255</span></div>
+  <div class="row"><b style="color:#33e">B</b><input type="range" id="b" min="0" max="255" value="255"><span id="bv">255</span></div>
+  <button id="logout">접속 끊기</button>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/mqtt@5/dist/mqtt.min.js"></script>
+<script>
+// ===== 사용자 설정 =====
+// HiveMQ Cloud 클러스터 주소 (https:// 는 빼고 적기). 아두이노의 arduino_secrets.h와 같은 값
+const BROKER_HOST = "클러스터_주소";
+
+// 토픽 이름: 아두이노 스케치(led_mqtt.ino)의 토픽과 같아야 한다.
+const TOPIC_BASE   = "led1";
+const TOPIC_CMD    = TOPIC_BASE + "/cmd";
+const TOPIC_STATE  = TOPIC_BASE + "/state";
+const TOPIC_ONLINE = TOPIC_BASE + "/online";
+// =======================
+
+const $ = id => document.getElementById(id);
+const ch = ["r", "g", "b"];
+
+let client = null;
+let on = false;          // LED 전원 상태 (화면 기준)
+let lastTouch = 0;       // 사용자가 마지막으로 조작한 시각
+let sendTimer = null;    // 슬라이드 바 전송 대기 타이머
+
+// 칩(상태 표시) 문구와 색 바꾸기
+function setChip(id, text, cls) {
+  $(id).textContent = text;
+  $(id).className = "chip " + (cls || "");
+}
+
+// 화면 갱신: 미리보기 색, 숫자, 전원 버튼
+function paint() {
+  ch.forEach(c => $(c + "v").textContent = $(c).value);
+  $("swatch").style.background =
+    on ? `rgb(${$("r").value},${$("g").value},${$("b").value})` : "#222";
+  $("power").textContent = on ? "ON" : "OFF";
+  $("power").className = on ? "on" : "";
+}
+
+// 브로커로 보낼 명령 문자열. 예: "1,255,128,0"
+function cmdText() {
+  return `${on ? 1 : 0},${$("r").value},${$("g").value},${$("b").value}`;
+}
+
+// 명령 발행
+function publishCmd() {
+  if (client && client.connected) client.publish(TOPIC_CMD, cmdText());
+}
+
+// 아두이노가 알려 준 상태를 화면에 반영. 예: "1,255,128,0"
+function applyState(text) {
+  const p = text.split(",").map(Number);
+  if (p.length !== 4 || p.some(isNaN)) return;
+  on = p[0] === 1;
+  ch.forEach((c, i) => $(c).value = p[i + 1]);
+  paint();
+}
+
+// 접속 화면 <-> 제어 화면 전환
+function showPanel(show) {
+  $("panel").style.display = show ? "block" : "none";
+  $("login").style.display = show ? "none" : "block";
+}
+
+// 접속
+$("login").addEventListener("submit", e => {
+  e.preventDefault();
+  $("msg").textContent = "";
+  setChip("chipBroker", "브로커: 접속 중...", "");
+
+  client = mqtt.connect(`wss://${BROKER_HOST}:8884/mqtt`, {
+    username: $("user").value,
+    password: $("pass").value,
+    clientId: "web-" + Math.random().toString(16).slice(2, 10),
+    reconnectPeriod: 3000,
+    connectTimeout: 8000
+  });
+
+  client.on("connect", () => {
+    setChip("chipBroker", "브로커: 연결됨", "ok");
+    client.subscribe([TOPIC_STATE, TOPIC_ONLINE]);
+    $("pass").value = "";  // 비밀번호는 화면에 남기지 않는다
+    showPanel(true);
+  });
+
+  client.on("message", (topic, payload) => {
+    const text = payload.toString();
+    if (topic === TOPIC_ONLINE) {
+      const online = text === "1";
+      setChip("chipDevice", online ? "장치: 접속 중" : "장치: 꺼져 있음", online ? "ok" : "bad");
+    } else if (topic === TOPIC_STATE) {
+      // 슬라이드 바를 움직이는 동안에는 화면이 튀지 않도록 상태 반영을 잠시 미룬다
+      if (Date.now() - lastTouch > 1500) applyState(text);
+    }
+  });
+
+  client.on("close", () => setChip("chipBroker", "브로커: 연결 끊김", "bad"));
+
+  client.on("error", err => {
+    // 4: 계정 이름/비밀번호 오류, 5: 권한 없음 -> 다시 시도해도 소용없으므로 중단
+    if (err && (err.code === 4 || err.code === 5)) {
+      $("msg").textContent = "계정 이름 또는 비밀번호가 틀렸습니다.";
+      client.removeAllListeners();
+      client.end(true);
+      setChip("chipBroker", "브로커: 연결 안 됨", "bad");
+      showPanel(false);
+    }
+  });
+});
+
+// 슬라이드 바: 움직일 때마다 화면을 바꾸고, 0.12초에 한 번만 최신 값을 전송
+ch.forEach(c => $(c).addEventListener("input", () => {
+  lastTouch = Date.now();
+  paint();
+  if (sendTimer) return;
+  sendTimer = setTimeout(() => { sendTimer = null; publishCmd(); }, 120);
+}));
+
+// 전원 버튼
+$("power").addEventListener("click", () => {
+  lastTouch = Date.now();
+  on = !on;
+  paint();
+  publishCmd();
+});
+
+// 접속 끊기
+$("logout").addEventListener("click", () => {
+  if (client) {
+    client.removeAllListeners();
+    client.end(true);
+  }
+  setChip("chipBroker", "브로커: 연결 안 됨", "");
+  setChip("chipDevice", "장치: 확인 전", "");
+  showPanel(false);
+});
+
+paint();
+</script>
+</body>
+</html>
