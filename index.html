@@ -20,6 +20,7 @@
   #swatch { height: 90px; border-radius: 12px; background: #222; margin: 16px 0; }
   #power { font-size: 22px; padding: 12px 40px; border: 0; border-radius: 24px; background: #999; color: #fff; }
   #power.on { background: #2a7de1; }
+  #allOff { display: block; width: 100%; font-size: 16px; padding: 12px; margin-bottom: 18px; border: 0; border-radius: 8px; background: #c0392b; color: #fff; }
   .row { display: flex; align-items: center; gap: 10px; margin: 18px 0; }
   .row b { width: 20px; }
   .row input { flex: 1; height: 28px; }
@@ -44,6 +45,7 @@
 
 <!-- 제어 화면: 접속에 성공하면 나타난다 -->
 <div id="panel">
+  <button id="allOff">모두 끄기</button>
   <div id="swatch"></div>
   <button id="power">OFF</button>
   <div class="row"><b style="color:#e33">R</b><input type="range" id="r" min="0" max="255" value="255"><span id="rv">255</span></div>
@@ -58,12 +60,16 @@
 // HiveMQ Cloud 클러스터 주소 (https:// 는 빼고 적기). 아두이노의 arduino_secrets.h와 같은 값
 const BROKER_HOST = "3d11f01f0aee4240b735448dac992c07.s1.eu.hivemq.cloud";
 
-// 토픽 이름: 아두이노 스케치(led_mqtt.ino)의 토픽과 같아야 한다.
-const TOPIC_BASE   = "led1";
-const TOPIC_CMD    = TOPIC_BASE + "/cmd";
-const TOPIC_STATE  = TOPIC_BASE + "/state";
-const TOPIC_ONLINE = TOPIC_BASE + "/online";
+// 이 화면이 제어할 기기 ID. 아두이노의 arduino_secrets.h의 SECRET_DEVICE_ID와 같아야 한다.
+const DEVICE_ID = "led1";
 // =======================
+
+// 토픽 이름: 아두이노 스케치(led_mqtt.ino)와 같아야 한다.
+const TOPIC_POWER     = `led/${DEVICE_ID}/power`;   // 전원 명령 "1" 또는 "0"
+const TOPIC_COLOR     = `led/${DEVICE_ID}/color`;   // 색 명령 "R,G,B"
+const TOPIC_STATE     = `led/${DEVICE_ID}/state`;   // 현재 상태 "전원,R,G,B"
+const TOPIC_ONLINE    = `led/${DEVICE_ID}/online`;  // 기기 접속 여부 "1" 또는 "0"
+const TOPIC_ALL_POWER = "led/all/power";            // 모든 기기 전원 명령 (모두 끄기)
 
 const $ = id => document.getElementById(id);
 const ch = ["r", "g", "b"];
@@ -88,14 +94,16 @@ function paint() {
   $("power").className = on ? "on" : "";
 }
 
-// 브로커로 보낼 명령 문자열. 예: "1,255,128,0"
-function cmdText() {
-  return `${on ? 1 : 0},${$("r").value},${$("g").value},${$("b").value}`;
+// 전원 명령 발행 ("1" 또는 "0")
+function publishPower() {
+  if (client && client.connected) client.publish(TOPIC_POWER, on ? "1" : "0");
 }
 
-// 명령 발행
-function publishCmd() {
-  if (client && client.connected) client.publish(TOPIC_CMD, cmdText());
+// 색 명령 발행. 예: "255,128,0"
+function publishColor() {
+  if (client && client.connected) {
+    client.publish(TOPIC_COLOR, `${$("r").value},${$("g").value},${$("b").value}`);
+  }
 }
 
 // 아두이노가 알려 준 상태를 화면에 반영. 예: "1,255,128,0"
@@ -138,7 +146,7 @@ $("login").addEventListener("submit", e => {
     const text = payload.toString();
     if (topic === TOPIC_ONLINE) {
       const online = text === "1";
-      setChip("chipDevice", online ? "장치: 접속 중" : "장치: 꺼져 있음", online ? "ok" : "bad");
+      setChip("chipDevice", `${DEVICE_ID}: ` + (online ? "접속 중" : "꺼져 있음"), online ? "ok" : "bad");
     } else if (topic === TOPIC_STATE) {
       // 슬라이드 바를 움직이는 동안에는 화면이 튀지 않도록 상태 반영을 잠시 미룬다
       if (Date.now() - lastTouch > 1500) applyState(text);
@@ -159,20 +167,28 @@ $("login").addEventListener("submit", e => {
   });
 });
 
-// 슬라이드 바: 움직일 때마다 화면을 바꾸고, 0.12초에 한 번만 최신 값을 전송
+// 슬라이드 바: 움직일 때마다 화면을 바꾸고, 0.12초에 한 번만 최신 색을 전송 (전원은 바꾸지 않는다)
 ch.forEach(c => $(c).addEventListener("input", () => {
   lastTouch = Date.now();
   paint();
   if (sendTimer) return;
-  sendTimer = setTimeout(() => { sendTimer = null; publishCmd(); }, 120);
+  sendTimer = setTimeout(() => { sendTimer = null; publishColor(); }, 120);
 }));
 
-// 전원 버튼
+// 전원 버튼 (색은 바꾸지 않는다)
 $("power").addEventListener("click", () => {
   lastTouch = Date.now();
   on = !on;
   paint();
-  publishCmd();
+  publishPower();
+});
+
+// 모두 끄기: 모든 기기가 함께 받는 토픽에 "0"을 보낸다 (색은 그대로)
+$("allOff").addEventListener("click", () => {
+  lastTouch = Date.now();
+  on = false;
+  paint();
+  if (client && client.connected) client.publish(TOPIC_ALL_POWER, "0");
 });
 
 // 접속 끊기
