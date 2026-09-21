@@ -87,10 +87,11 @@ const LABELS = ["R", "G", "B"];
 let client = null;
 const devices = {};  // 기기 ID -> { id, el, name, online, on, rgb, touch, timer }
 
-// 칩(상태 표시) 문구와 색 바꾸기
+// 칩(상태 표시) 문구와 색 바꾸기 (상태 색만 바꾸고, 다른 클래스(.st 등)는 그대로 둔다)
 function setChip(el, text, cls) {
   el.textContent = text;
-  el.className = "chip " + (cls || "");
+  el.classList.remove("ok", "bad");
+  if (cls) el.classList.add(cls);
 }
 
 // 상단의 "기기: n대 접속 중" 표시와 빈 화면 안내 갱신
