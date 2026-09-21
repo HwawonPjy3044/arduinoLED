@@ -6,10 +6,10 @@
 <title>RGB LED 원격 제어</title>
 <style>
   * { box-sizing: border-box; }
-  body { font-family: sans-serif; max-width: 420px; margin: 0 auto; padding: 20px; text-align: center; color: #222; }
+  body { font-family: sans-serif; max-width: 460px; margin: 0 auto; padding: 20px; text-align: center; color: #222; }
   h2 { margin: 8px 0 14px; }
   .chips { display: flex; gap: 8px; justify-content: center; flex-wrap: wrap; margin-bottom: 14px; }
-  .chip { font-size: 13px; padding: 4px 12px; border-radius: 14px; background: #ddd; color: #555; }
+  .chip { font-size: 13px; padding: 4px 12px; border-radius: 14px; background: #ddd; color: #555; white-space: nowrap; }
   .chip.ok { background: #d8f3dc; color: #1b6b32; }
   .chip.bad { background: #fde2e2; color: #a12; }
   #login input { display: block; width: 100%; font-size: 16px; padding: 12px; margin: 10px 0; border: 1px solid #bbb; border-radius: 8px; }
@@ -17,14 +17,26 @@
   #logout { background: #999; font-size: 13px; padding: 6px 16px; margin-top: 26px; }
   #msg { min-height: 20px; color: #a12; font-size: 14px; margin: 8px 0; }
   #panel { display: none; }
-  #swatch { height: 90px; border-radius: 12px; background: #222; margin: 16px 0; }
-  #power { font-size: 22px; padding: 12px 40px; border: 0; border-radius: 24px; background: #999; color: #fff; }
-  #power.on { background: #2a7de1; }
-  #allOff { display: block; width: 100%; font-size: 16px; padding: 12px; margin-bottom: 18px; border: 0; border-radius: 8px; background: #c0392b; color: #fff; }
-  .row { display: flex; align-items: center; gap: 10px; margin: 18px 0; }
-  .row b { width: 20px; }
-  .row input { flex: 1; height: 28px; }
+  #allOff { display: block; width: 100%; font-size: 16px; padding: 12px; margin-bottom: 16px; border: 0; border-radius: 8px; background: #c0392b; color: #fff; }
+  #empty { color: #777; font-size: 14px; line-height: 1.6; padding: 24px 8px; }
+
+  .card { border: 1px solid #ddd; border-radius: 12px; margin: 14px 0; text-align: left; background: #fff; }
+  .head { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 12px 14px; cursor: pointer; }
+  .title { min-width: 0; }
+  .title b { display: block; font-size: 17px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .title small { color: #888; font-size: 12px; }
+  .body { padding: 0 14px 14px; text-align: center; }
+  .body.hide { display: none; }
+  .sw { height: 56px; border-radius: 10px; background: #222; margin-bottom: 12px; }
+  .pw { font-size: 18px; padding: 9px 32px; border: 0; border-radius: 22px; background: #999; color: #fff; }
+  .pw.on { background: #2a7de1; }
+  .row { display: flex; align-items: center; gap: 10px; margin: 12px 0; }
+  .row b { width: 20px; text-align: center; }
+  .row input { flex: 1; height: 26px; }
   .row span { width: 36px; text-align: right; }
+  .tools { display: flex; gap: 8px; justify-content: center; margin-top: 8px; }
+  .tools button { font-size: 12px; padding: 6px 12px; border: 1px solid #bbb; border-radius: 8px; background: #f6f6f6; color: #444; }
+  .tools .del { color: #a12; border-color: #e3b0b0; }
 </style>
 </head>
 <body>
@@ -32,7 +44,7 @@
 <h2>RGB LED 원격 제어</h2>
 <div class="chips">
   <span class="chip" id="chipBroker">브로커: 연결 안 됨</span>
-  <span class="chip" id="chipDevice">장치: 확인 전</span>
+  <span class="chip" id="chipCount">기기: 확인 전</span>
 </div>
 
 <!-- 로그인: 계정 정보는 코드에 넣지 않고 접속할 때 입력받는다 -->
@@ -43,14 +55,11 @@
 </form>
 <div id="msg"></div>
 
-<!-- 제어 화면: 접속에 성공하면 나타난다 -->
+<!-- 제어 화면: 접속에 성공하면 나타난다. 기기 카드는 자동으로 추가된다 -->
 <div id="panel">
   <button id="allOff">모두 끄기</button>
-  <div id="swatch"></div>
-  <button id="power">OFF</button>
-  <div class="row"><b style="color:#e33">R</b><input type="range" id="r" min="0" max="255" value="255"><span id="rv">255</span></div>
-  <div class="row"><b style="color:#2a2">G</b><input type="range" id="g" min="0" max="255" value="255"><span id="gv">255</span></div>
-  <div class="row"><b style="color:#33e">B</b><input type="range" id="b" min="0" max="255" value="255"><span id="bv">255</span></div>
+  <div id="empty">아직 접속한 기기가 없습니다.<br>보드를 켜면 이곳에 자동으로 나타납니다.</div>
+  <div id="list"></div>
   <button id="logout">접속 끊기</button>
 </div>
 
@@ -58,61 +67,191 @@
 <script>
 // ===== 사용자 설정 =====
 // HiveMQ Cloud 클러스터 주소 (https:// 는 빼고 적기). 아두이노의 arduino_secrets.h와 같은 값
-const BROKER_HOST = "3d11f01f0aee4240b735448dac992c07.s1.eu.hivemq.cloud";
-
-// 이 화면이 제어할 기기 ID. 아두이노의 arduino_secrets.h의 SECRET_DEVICE_ID와 같아야 한다.
-const DEVICE_ID = "led1";
+const BROKER_HOST = "클러스터_주소";
 // =======================
 
-// 토픽 이름: 아두이노 스케치(led_mqtt.ino)와 같아야 한다.
-const TOPIC_POWER     = `led/${DEVICE_ID}/power`;   // 전원 명령 "1" 또는 "0"
-const TOPIC_COLOR     = `led/${DEVICE_ID}/color`;   // 색 명령 "R,G,B"
-const TOPIC_STATE     = `led/${DEVICE_ID}/state`;   // 현재 상태 "전원,R,G,B"
-const TOPIC_ONLINE    = `led/${DEVICE_ID}/online`;  // 기기 접속 여부 "1" 또는 "0"
-const TOPIC_ALL_POWER = "led/all/power";            // 모든 기기 전원 명령 (모두 끄기)
+// 토픽 이름: 아두이노 스케치(led_mqtt.ino)와 같아야 한다. <ID>는 기기 ID
+//   led/<ID>/power   전원 명령 "1" 또는 "0"
+//   led/<ID>/color   색 명령 "R,G,B"
+//   led/<ID>/state   현재 상태 "전원,R,G,B"   (아두이노가 발행)
+//   led/<ID>/online  접속 여부 "1" 또는 "0"    (아두이노가 발행)
+//   led/<ID>/name    별명                      (이 웹페이지가 발행, 브로커가 보관)
+//   led/all/power    모든 기기 전원 명령 (모두 끄기)
+const TOPIC_ALL_POWER = "led/all/power";
+const topicOf = (id, kind) => `led/${id}/${kind}`;
 
 const $ = id => document.getElementById(id);
-const ch = ["r", "g", "b"];
+const COLORS = ["#e33", "#2a2", "#33e"];  // R, G, B 글자 색
+const LABELS = ["R", "G", "B"];
 
 let client = null;
-let on = false;          // LED 전원 상태 (화면 기준)
-let lastTouch = 0;       // 사용자가 마지막으로 조작한 시각
-let sendTimer = null;    // 슬라이드 바 전송 대기 타이머
+const devices = {};  // 기기 ID -> { id, el, name, online, on, rgb, touch, timer }
 
 // 칩(상태 표시) 문구와 색 바꾸기
-function setChip(id, text, cls) {
-  $(id).textContent = text;
-  $(id).className = "chip " + (cls || "");
+function setChip(el, text, cls) {
+  el.textContent = text;
+  el.className = "chip " + (cls || "");
 }
 
-// 화면 갱신: 미리보기 색, 숫자, 전원 버튼
-function paint() {
-  ch.forEach(c => $(c + "v").textContent = $(c).value);
-  $("swatch").style.background =
-    on ? `rgb(${$("r").value},${$("g").value},${$("b").value})` : "#222";
-  $("power").textContent = on ? "ON" : "OFF";
-  $("power").className = on ? "on" : "";
+// 상단의 "기기: n대 접속 중" 표시와 빈 화면 안내 갱신
+function updateSummary() {
+  const list = Object.values(devices);
+  const online = list.filter(d => d.online).length;
+  setChip($("chipCount"), `기기: ${online}/${list.length}대 접속 중`, online > 0 ? "ok" : "");
+  $("empty").style.display = list.length ? "none" : "block";
 }
 
-// 전원 명령 발행 ("1" 또는 "0")
-function publishPower() {
-  if (client && client.connected) client.publish(TOPIC_POWER, on ? "1" : "0");
+// 카드를 별명(없으면 ID) 순으로 다시 정렬
+function sortCards() {
+  Object.values(devices)
+    .sort((a, b) => (a.name || a.id).localeCompare(b.name || b.id, "ko"))
+    .forEach(d => $("list").appendChild(d.el));
 }
 
-// 색 명령 발행. 예: "255,128,0"
-function publishColor() {
-  if (client && client.connected) {
-    client.publish(TOPIC_COLOR, `${$("r").value},${$("g").value},${$("b").value}`);
+// 기기 카드 화면 갱신
+function paint(d) {
+  const el = d.el;
+  el.querySelector(".nm").textContent = d.name || d.id;
+  el.querySelector(".idl").textContent = d.name ? `ID: ${d.id}` : "";
+
+  const st = el.querySelector(".st");
+  if (d.online === null) setChip(st, "확인 전", "");
+  else setChip(st, d.online ? "접속 중" : "꺼져 있음", d.online ? "ok" : "bad");
+
+  el.querySelector(".sw").style.background =
+    d.on ? `rgb(${d.rgb[0]},${d.rgb[1]},${d.rgb[2]})` : "#222";
+  const pw = el.querySelector(".pw");
+  pw.textContent = d.on ? "ON" : "OFF";
+  pw.className = "pw" + (d.on ? " on" : "");
+
+  el.querySelectorAll(".row").forEach((row, i) => {
+    row.querySelector("input").value = d.rgb[i];
+    row.querySelector("span").textContent = d.rgb[i];
+  });
+
+  // 접속 중인 기기는 목록에서 삭제할 수 없다 (접속이 끊긴 기기만 삭제 가능)
+  el.querySelector(".del").style.display = d.online ? "none" : "inline-block";
+}
+
+// 발행 도우미
+function publish(topic, text, retain) {
+  if (client && client.connected) client.publish(topic, text, { retain: !!retain, qos: 1 });
+}
+
+// 기기 카드를 만든다 (기기 ID나 별명은 화면에 textContent로만 넣는다)
+function createDevice(id) {
+  const el = document.createElement("section");
+  el.className = "card";
+  el.innerHTML = `
+    <div class="head">
+      <div class="title"><b class="nm"></b><small class="idl"></small></div>
+      <span class="chip st">확인 전</span>
+    </div>
+    <div class="body">
+      <div class="sw"></div>
+      <button class="pw">OFF</button>
+      ${LABELS.map((l, i) => `
+        <div class="row"><b style="color:${COLORS[i]}">${l}</b>
+          <input type="range" min="0" max="255" value="255"><span>255</span></div>`).join("")}
+      <div class="tools">
+        <button class="ren">별명 바꾸기</button>
+        <button class="del">목록에서 삭제</button>
+      </div>
+    </div>`;
+
+  const d = { id, el, name: "", online: null, on: false, rgb: [255, 255, 255], touch: 0, timer: null };
+
+  // 머리 부분을 누르면 카드를 접거나 편다
+  el.querySelector(".head").addEventListener("click", () => el.querySelector(".body").classList.toggle("hide"));
+
+  // 전원 버튼 (색은 바꾸지 않는다)
+  el.querySelector(".pw").addEventListener("click", () => {
+    d.touch = Date.now();
+    d.on = !d.on;
+    paint(d);
+    publish(topicOf(id, "power"), d.on ? "1" : "0");
+  });
+
+  // 슬라이드 바: 움직일 때마다 화면을 바꾸고, 0.12초에 한 번만 최신 색을 전송 (전원은 바꾸지 않는다)
+  el.querySelectorAll(".row input").forEach((input, i) => {
+    input.addEventListener("input", () => {
+      d.touch = Date.now();
+      d.rgb[i] = Number(input.value);
+      paint(d);
+      if (d.timer) return;
+      d.timer = setTimeout(() => {
+        d.timer = null;
+        publish(topicOf(id, "color"), d.rgb.join(","));
+      }, 120);
+    });
+  });
+
+  // 별명 바꾸기: 브로커에 보관되므로 다른 기기(휴대폰 등)에서도 같은 이름으로 보인다
+  el.querySelector(".ren").addEventListener("click", () => {
+    const input = prompt(`"${id}" 기기의 별명을 입력하세요. (비우면 별명 삭제)`, d.name);
+    if (input === null) return;
+    publish(topicOf(id, "name"), input.trim(), true);
+  });
+
+  // 목록에서 삭제: 보관 중인 상태·접속·별명 메시지를 지운다. 기기가 다시 접속하면 자동으로 나타난다.
+  el.querySelector(".del").addEventListener("click", () => {
+    if (!confirm(`"${d.name || id}" 기기를 목록에서 삭제할까요?\n(다시 접속하면 자동으로 나타납니다)`)) return;
+    removeDevice(id);
+    ["online", "state", "name"].forEach(kind => publish(topicOf(id, kind), "", true));
+  });
+
+  devices[id] = d;
+  $("list").appendChild(el);
+  paint(d);
+  sortCards();
+  updateSummary();
+  return d;
+}
+
+// 화면에서 기기 카드 제거
+function removeDevice(id) {
+  const d = devices[id];
+  if (!d) return;
+  if (d.timer) clearTimeout(d.timer);
+  d.el.remove();
+  delete devices[id];
+  updateSummary();
+}
+
+// 브로커에서 온 메시지 처리
+function onMessage(topic, payload) {
+  const parts = topic.split("/");
+  if (parts.length !== 3 || parts[0] !== "led") return;
+  const id = parts[1], kind = parts[2];
+  if (id === "all") return;
+  const text = payload.toString();
+
+  // 빈 메시지는 "지워졌다"는 뜻이다. 새 카드는 만들지 않는다.
+  if (text === "") {
+    if (kind === "online") removeDevice(id);
+    else if (kind === "name" && devices[id]) { devices[id].name = ""; paint(devices[id]); sortCards(); }
+    return;
   }
-}
 
-// 아두이노가 알려 준 상태를 화면에 반영. 예: "1,255,128,0"
-function applyState(text) {
-  const p = text.split(",").map(Number);
-  if (p.length !== 4 || p.some(isNaN)) return;
-  on = p[0] === 1;
-  ch.forEach((c, i) => $(c).value = p[i + 1]);
-  paint();
+  const d = devices[id] || createDevice(id);
+
+  if (kind === "online") {
+    d.online = (text === "1");
+    paint(d);
+    updateSummary();
+  } else if (kind === "state") {
+    // 슬라이드 바를 움직이는 동안에는 화면이 튀지 않도록 상태 반영을 잠시 미룬다
+    if (Date.now() - d.touch < 1500) return;
+    const p = text.split(",").map(Number);
+    if (p.length !== 4 || p.some(isNaN)) return;
+    d.on = (p[0] === 1);
+    d.rgb = [p[1], p[2], p[3]];
+    paint(d);
+  } else if (kind === "name") {
+    d.name = text;
+    paint(d);
+    sortCards();
+  }
 }
 
 // 접속 화면 <-> 제어 화면 전환
@@ -121,11 +260,17 @@ function showPanel(show) {
   $("login").style.display = show ? "none" : "block";
 }
 
+// 화면의 기기 카드를 모두 비운다
+function clearDevices() {
+  Object.keys(devices).forEach(removeDevice);
+  updateSummary();
+}
+
 // 접속
 $("login").addEventListener("submit", e => {
   e.preventDefault();
   $("msg").textContent = "";
-  setChip("chipBroker", "브로커: 접속 중...", "");
+  setChip($("chipBroker"), "브로커: 접속 중...", "");
 
   client = mqtt.connect(`wss://${BROKER_HOST}:8884/mqtt`, {
     username: $("user").value,
@@ -136,24 +281,16 @@ $("login").addEventListener("submit", e => {
   });
 
   client.on("connect", () => {
-    setChip("chipBroker", "브로커: 연결됨", "ok");
-    client.subscribe([TOPIC_STATE, TOPIC_ONLINE]);
+    setChip($("chipBroker"), "브로커: 연결됨", "ok");
+    updateSummary();
+    client.subscribe(["led/+/online", "led/+/state", "led/+/name"]);
     $("pass").value = "";  // 비밀번호는 화면에 남기지 않는다
     showPanel(true);
   });
 
-  client.on("message", (topic, payload) => {
-    const text = payload.toString();
-    if (topic === TOPIC_ONLINE) {
-      const online = text === "1";
-      setChip("chipDevice", `${DEVICE_ID}: ` + (online ? "접속 중" : "꺼져 있음"), online ? "ok" : "bad");
-    } else if (topic === TOPIC_STATE) {
-      // 슬라이드 바를 움직이는 동안에는 화면이 튀지 않도록 상태 반영을 잠시 미룬다
-      if (Date.now() - lastTouch > 1500) applyState(text);
-    }
-  });
+  client.on("message", onMessage);
 
-  client.on("close", () => setChip("chipBroker", "브로커: 연결 끊김", "bad"));
+  client.on("close", () => setChip($("chipBroker"), "브로커: 연결 끊김", "bad"));
 
   client.on("error", err => {
     // 4: 계정 이름/비밀번호 오류, 5: 권한 없음 -> 다시 시도해도 소용없으므로 중단
@@ -161,34 +298,20 @@ $("login").addEventListener("submit", e => {
       $("msg").textContent = "계정 이름 또는 비밀번호가 틀렸습니다.";
       client.removeAllListeners();
       client.end(true);
-      setChip("chipBroker", "브로커: 연결 안 됨", "bad");
+      setChip($("chipBroker"), "브로커: 연결 안 됨", "bad");
       showPanel(false);
     }
   });
 });
 
-// 슬라이드 바: 움직일 때마다 화면을 바꾸고, 0.12초에 한 번만 최신 색을 전송 (전원은 바꾸지 않는다)
-ch.forEach(c => $(c).addEventListener("input", () => {
-  lastTouch = Date.now();
-  paint();
-  if (sendTimer) return;
-  sendTimer = setTimeout(() => { sendTimer = null; publishColor(); }, 120);
-}));
-
-// 전원 버튼 (색은 바꾸지 않는다)
-$("power").addEventListener("click", () => {
-  lastTouch = Date.now();
-  on = !on;
-  paint();
-  publishPower();
-});
-
 // 모두 끄기: 모든 기기가 함께 받는 토픽에 "0"을 보낸다 (색은 그대로)
 $("allOff").addEventListener("click", () => {
-  lastTouch = Date.now();
-  on = false;
-  paint();
-  if (client && client.connected) client.publish(TOPIC_ALL_POWER, "0");
+  Object.values(devices).forEach(d => {
+    d.touch = Date.now();
+    d.on = false;
+    paint(d);
+  });
+  publish(TOPIC_ALL_POWER, "0");
 });
 
 // 접속 끊기
@@ -197,12 +320,12 @@ $("logout").addEventListener("click", () => {
     client.removeAllListeners();
     client.end(true);
   }
-  setChip("chipBroker", "브로커: 연결 안 됨", "");
-  setChip("chipDevice", "장치: 확인 전", "");
+  clearDevices();
+  setChip($("chipBroker"), "브로커: 연결 안 됨", "");
+  setChip($("chipCount"), "기기: 확인 전", "");
   showPanel(false);
 });
 
-paint();
 </script>
 </body>
 </html>
