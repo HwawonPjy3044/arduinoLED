@@ -37,6 +37,32 @@
   .tools { display: flex; gap: 8px; justify-content: center; margin-top: 8px; }
   .tools button { font-size: 12px; padding: 6px 12px; border: 1px solid #bbb; border-radius: 8px; background: #f6f6f6; color: #444; }
   .tools .del { color: #a12; border-color: #e3b0b0; }
+
+  .sched { margin-top: 16px; padding-top: 14px; border-top: 1px dashed #ddd; }
+  .sched h4 { margin: 0 0 8px; font-size: 14px; color: #555; }
+  .sched-empty { color: #999; font-size: 13px; padding: 6px 0; }
+  .sched-item { display: flex; align-items: center; gap: 8px; padding: 8px 10px; border: 1px solid #e3e3e3; border-radius: 8px; margin-bottom: 6px; background: #fafafa; }
+  .sched-item.off { opacity: .5; }
+  .sched-item .dot { width: 12px; height: 12px; border-radius: 50%; flex: none; }
+  .sched-item .desc { flex: 1; font-size: 13px; line-height: 1.4; }
+  .sched-item button { font-size: 11px; padding: 4px 8px; border: 1px solid #bbb; border-radius: 6px; background: #fff; color: #555; }
+  .sched-item .sdel { color: #a12; border-color: #e3b0b0; }
+  .addSched { width: 100%; font-size: 13px; padding: 8px; margin-top: 6px; border: 1px dashed #999; border-radius: 8px; background: #f6f6f6; color: #444; }
+
+  .schedForm { display: none; margin-top: 10px; padding: 12px; border: 1px solid #ddd; border-radius: 10px; background: #f9f9fb; text-align: left; }
+  .schedForm.show { display: block; }
+  .schedForm .fr { display: flex; align-items: center; gap: 8px; margin: 8px 0; flex-wrap: wrap; }
+  .schedForm .fr label { font-size: 13px; color: #555; width: 66px; flex: none; }
+  .schedForm input[type=time], .schedForm input[type=date] { font-size: 14px; padding: 5px; border: 1px solid #ccc; border-radius: 6px; }
+  .schedForm .dow { display: flex; gap: 4px; flex-wrap: wrap; }
+  .schedForm .dow label { width: auto; display: flex; align-items: center; gap: 2px; font-size: 12px; background: #fff; border: 1px solid #ccc; border-radius: 6px; padding: 4px 6px; }
+  .schedForm .dow input { margin: 0; }
+  .schedForm .repeatMode { display: flex; gap: 10px; font-size: 13px; }
+  .schedForm .btns { display: flex; gap: 8px; margin-top: 10px; }
+  .schedForm .btns button { flex: 1; font-size: 14px; padding: 9px; border: 0; border-radius: 8px; }
+  .schedForm .save { background: #2a7de1; color: #fff; }
+  .schedForm .cancel { background: #ddd; color: #444; }
+  .schedForm .err { color: #a12; font-size: 12px; min-height: 16px; }
 </style>
 </head>
 <body>
@@ -67,16 +93,20 @@
 <script>
 // ===== 사용자 설정 =====
 // HiveMQ Cloud 클러스터 주소 (https:// 는 빼고 적기). 아두이노의 arduino_secrets.h와 같은 값
-const BROKER_HOST = "3d11f01f0aee4240b735448dac992c07.s1.eu.hivemq.cloud";
+const BROKER_HOST = "클러스터_주소";
 // =======================
 
 // 토픽 이름: 아두이노 스케치(led_mqtt.ino)와 같아야 한다. <ID>는 기기 ID
 //   led/<ID>/power   전원 명령 "1" 또는 "0"
 //   led/<ID>/color   색 명령 "R,G,B"
+//   led/<ID>/schedule 예약 목록. 한 줄에 하나씩. "id,사용,켜는시,켜는분,끄는시,끄는분,요일,시작일,종료일,R,G,B"
+//                      (아두이노 스케치의 parseSchedule()과 형식이 같아야 한다. 이 웹페이지가 발행, 브로커가 보관)
 //   led/<ID>/state   현재 상태 "전원,R,G,B"   (아두이노가 발행)
 //   led/<ID>/online  접속 여부 "1" 또는 "0"    (아두이노가 발행)
 //   led/<ID>/name    별명                      (이 웹페이지가 발행, 브로커가 보관)
 //   led/all/power    모든 기기 전원 명령 (모두 끄기)
+const DOW_LABELS = ["일", "월", "화", "수", "목", "금", "토"];
+const DOW_BITS = [1, 2, 4, 8, 16, 32, 64];  // 일1 월2 화4 수8 목16 금32 토64 (아두이노와 동일)
 const TOPIC_ALL_POWER = "led/all/power";
 const topicOf = (id, kind) => `led/${id}/${kind}`;
 
@@ -85,7 +115,65 @@ const COLORS = ["#e33", "#2a2", "#33e"];  // R, G, B 글자 색
 const LABELS = ["R", "G", "B"];
 
 let client = null;
-const devices = {};  // 기기 ID -> { id, el, name, online, on, rgb, touch, timer }
+const devices = {};  // 기기 ID -> { id, el, name, online, on, rgb, touch, timer, schedules, editingSchedId }
+
+// ===== 예약(스케줄) 문자열 <-> 객체 변환 =====
+// 브로커에 저장되는 형식: 한 줄에 하나씩, "id,사용,켜는시,켜는분,끄는시,끄는분,요일,시작일,종료일,R,G,B"
+// (아두이노 스케치의 parseSchedule()과 반드시 같은 순서여야 한다)
+
+// 예약 목록 문자열(payload) -> 예약 객체 배열
+function parseScheduleText(payload) {
+  const list = [];
+  (payload || "").split("\n").forEach(line => {
+    line = line.trim();
+    if (!line) return;
+    const tok = line.split(",");
+    if (tok.length !== 12) return;
+    const n = i => Number(tok[i]);
+    list.push({
+      sid: tok[0] || String(Date.now()) + Math.random().toString(16).slice(2, 6),
+      enabled: n(1) === 1,
+      onH: n(2), onM: n(3), offH: n(4), offM: n(5),
+      days: n(6),
+      startDate: n(7), endDate: n(8),
+      r: n(9), g: n(10), b: n(11)
+    });
+  });
+  return list;
+}
+
+// 예약 객체 배열 -> 브로커에 보낼 문자열
+function scheduleToText(list) {
+  return list.map(a => [
+    a.sid, a.enabled ? 1 : 0, a.onH, a.onM, a.offH, a.offM,
+    a.days, a.startDate, a.endDate, a.r, a.g, a.b
+  ].join(",")).join("\n");
+}
+
+const pad2 = n => String(n).padStart(2, "0");
+const hm = (h, m) => `${pad2(h)}:${pad2(m)}`;
+
+// YYYYMMDD 숫자 <-> <input type=date>의 "YYYY-MM-DD" 문자열
+function dateNumToInput(n) {
+  if (!n) return "";
+  const s = String(n);
+  return `${s.slice(0, 4)}-${s.slice(4, 6)}-${s.slice(6, 8)}`;
+}
+function dateInputToNum(s) {
+  return s ? Number(s.replaceAll("-", "")) : 0;
+}
+
+// 예약 하나를 사람이 읽을 문장으로 표현
+function describeAlarm(a) {
+  const when = a.days === 0
+    ? (a.startDate ? `${String(a.startDate).slice(0, 4)}.${String(a.startDate).slice(4, 6)}.${String(a.startDate).slice(6, 8)} 하루만` : "날짜 미지정")
+    : "매주 " + DOW_BITS.map((bit, i) => (a.days & bit) ? DOW_LABELS[i] : "").join("");
+  let period = "";
+  if (a.days !== 0 && (a.startDate || a.endDate)) {
+    period = ` (${a.startDate ? dateNumToInput(a.startDate) : "제한없음"} ~ ${a.endDate ? dateNumToInput(a.endDate) : "제한없음"})`;
+  }
+  return `${when} · ${hm(a.onH, a.onM)} 켜짐 → ${hm(a.offH, a.offM)} 꺼짐${period}`;
+}
 
 // 칩(상태 표시) 문구와 색 바꾸기 (상태 색만 바꾸고, 다른 클래스(.st 등)는 그대로 둔다)
 function setChip(el, text, cls) {
@@ -158,9 +246,53 @@ function createDevice(id) {
         <button class="ren">별명 바꾸기</button>
         <button class="del">목록에서 삭제</button>
       </div>
+
+      <div class="sched">
+        <h4>예약 (시간 제어)</h4>
+        <div class="schedList"></div>
+        <button class="addSched">+ 예약 추가</button>
+
+        <div class="schedForm">
+          <div class="fr">
+            <label>켜는 시각</label><input type="time" class="f-on" value="18:00">
+            <label>끄는 시각</label><input type="time" class="f-off" value="23:00">
+          </div>
+          <div class="fr">
+            <label>반복</label>
+            <div class="repeatMode">
+              <label><input type="radio" name="rep-${id}" class="f-rep" value="weekly" checked>매주</label>
+              <label><input type="radio" name="rep-${id}" class="f-rep" value="once">하루만</label>
+            </div>
+          </div>
+          <div class="fr f-dowRow">
+            <label>요일</label>
+            <div class="dow">
+              ${DOW_LABELS.map((l, i) => `<label><input type="checkbox" class="f-dow" value="${DOW_BITS[i]}">${l}</label>`).join("")}
+            </div>
+          </div>
+          <div class="fr f-onceRow" style="display:none">
+            <label>날짜</label><input type="date" class="f-onceDate">
+          </div>
+          <div class="fr">
+            <label>기간(선택)</label><input type="date" class="f-start"><span>~</span><input type="date" class="f-end">
+          </div>
+          <div class="fr">
+            <label>색상</label><input type="color" class="f-color" value="#ffffff">
+            <button type="button" class="f-useCurrent" style="font-size:11px;padding:4px 8px;border:1px solid #bbb;border-radius:6px;background:#fff;">지금 색 사용</button>
+          </div>
+          <div class="fr">
+            <label>사용</label><input type="checkbox" class="f-enabled" checked>
+          </div>
+          <div class="err"></div>
+          <div class="btns">
+            <button type="button" class="cancel">취소</button>
+            <button type="button" class="save">저장</button>
+          </div>
+        </div>
+      </div>
     </div>`;
 
-  const d = { id, el, name: "", online: null, on: false, rgb: [255, 255, 255], touch: 0, timer: null };
+  const d = { id, el, name: "", online: null, on: false, rgb: [255, 255, 255], touch: 0, timer: null, schedules: [], editingSchedId: null };
 
   // 머리 부분을 누르면 카드를 접거나 편다
   el.querySelector(".head").addEventListener("click", () => el.querySelector(".body").classList.toggle("hide"));
@@ -198,12 +330,154 @@ function createDevice(id) {
   el.querySelector(".del").addEventListener("click", () => {
     if (!confirm(`"${d.name || id}" 기기를 목록에서 삭제할까요?\n(다시 접속하면 자동으로 나타납니다)`)) return;
     removeDevice(id);
-    ["online", "state", "name"].forEach(kind => publish(topicOf(id, kind), "", true));
+    ["online", "state", "name", "schedule"].forEach(kind => publish(topicOf(id, kind), "", true));
+  });
+
+  // ===== 예약(시간 제어) UI =====
+  const form = el.querySelector(".schedForm");
+  const fOn = el.querySelector(".f-on"), fOff = el.querySelector(".f-off");
+  const fDowRow = el.querySelector(".f-dowRow"), fOnceRow = el.querySelector(".f-onceRow");
+  const fOnceDate = el.querySelector(".f-onceDate");
+  const fStart = el.querySelector(".f-start"), fEnd = el.querySelector(".f-end");
+  const fColor = el.querySelector(".f-color"), fEnabled = el.querySelector(".f-enabled");
+  const fErr = el.querySelector(".err");
+
+  // 모든 예약을 아두이노에 보낼 문자열로 합쳐 retain 발행 (비었으면 빈 문자열로 발행해서 지운다)
+  function publishSchedules() {
+    publish(topicOf(id, "schedule"), scheduleToText(d.schedules), true);
+  }
+
+  // 예약 목록 화면 갱신
+  function renderSchedules() {
+    const box = el.querySelector(".schedList");
+    if (d.schedules.length === 0) {
+      box.innerHTML = `<div class="sched-empty">등록된 예약이 없습니다.</div>`;
+      return;
+    }
+    box.innerHTML = "";
+    d.schedules.forEach(a => {
+      const item = document.createElement("div");
+      item.className = "sched-item" + (a.enabled ? "" : " off");
+      item.innerHTML = `
+        <span class="dot" style="background:rgb(${a.r},${a.g},${a.b})"></span>
+        <span class="desc"></span>
+        <button type="button" class="stoggle">${a.enabled ? "끄기" : "켜기"}</button>
+        <button type="button" class="sedit">수정</button>
+        <button type="button" class="sdel">삭제</button>`;
+      item.querySelector(".desc").textContent = describeAlarm(a);
+      item.querySelector(".stoggle").addEventListener("click", () => {
+        a.enabled = !a.enabled;
+        publishSchedules();
+        renderSchedules();
+      });
+      item.querySelector(".sedit").addEventListener("click", () => openForm(a));
+      item.querySelector(".sdel").addEventListener("click", () => {
+        if (!confirm("이 예약을 삭제할까요?")) return;
+        d.schedules = d.schedules.filter(x => x.sid !== a.sid);
+        publishSchedules();
+        renderSchedules();
+      });
+      box.appendChild(item);
+    });
+  }
+  d.renderSchedules = renderSchedules;
+
+  // 폼 열기: a가 있으면 수정, 없으면 새로 추가
+  function openForm(a) {
+    d.editingSchedId = a ? a.sid : null;
+    fErr.textContent = "";
+    if (a) {
+      fOn.value = hm(a.onH, a.onM);
+      fOff.value = hm(a.offH, a.offM);
+      form.querySelector(`.f-rep[value="${a.days === 0 ? "once" : "weekly"}"]`).checked = true;
+      el.querySelectorAll(".f-dow").forEach(cb => cb.checked = !!(a.days & Number(cb.value)));
+      fOnceDate.value = a.days === 0 ? dateNumToInput(a.startDate) : "";
+      fStart.value = a.days !== 0 ? dateNumToInput(a.startDate) : "";
+      fEnd.value = a.days !== 0 ? dateNumToInput(a.endDate) : "";
+      const toHex = v => v.toString(16).padStart(2, "0");
+      fColor.value = `#${toHex(a.r)}${toHex(a.g)}${toHex(a.b)}`;
+      fEnabled.checked = a.enabled;
+    } else {
+      fOn.value = "18:00"; fOff.value = "23:00";
+      form.querySelector('.f-rep[value="weekly"]').checked = true;
+      el.querySelectorAll(".f-dow").forEach(cb => cb.checked = false);
+      fOnceDate.value = ""; fStart.value = ""; fEnd.value = "";
+      const toHex = v => v.toString(16).padStart(2, "0");
+      fColor.value = `#${toHex(d.rgb[0])}${toHex(d.rgb[1])}${toHex(d.rgb[2])}`;
+      fEnabled.checked = true;
+    }
+    updateRepeatVisibility();
+    form.classList.add("show");
+    el.querySelector(".body").classList.remove("hide");
+    form.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  }
+  function closeForm() {
+    form.classList.remove("show");
+    d.editingSchedId = null;
+  }
+  function updateRepeatVisibility() {
+    const weekly = form.querySelector('.f-rep[value="weekly"]').checked;
+    fDowRow.style.display = weekly ? "flex" : "none";
+    fOnceRow.style.display = weekly ? "none" : "flex";
+  }
+  el.querySelectorAll(".f-rep").forEach(r => r.addEventListener("change", updateRepeatVisibility));
+
+  el.querySelector(".addSched").addEventListener("click", () => {
+    if (d.schedules.length >= 8) { alert("예약은 기기마다 최대 8개까지 등록할 수 있습니다."); return; }
+    openForm(null);
+  });
+  el.querySelector(".f-useCurrent").addEventListener("click", () => {
+    const toHex = v => v.toString(16).padStart(2, "0");
+    fColor.value = `#${toHex(d.rgb[0])}${toHex(d.rgb[1])}${toHex(d.rgb[2])}`;
+  });
+  el.querySelector(".cancel").addEventListener("click", closeForm);
+
+  el.querySelector(".save").addEventListener("click", () => {
+    fErr.textContent = "";
+    const weekly = form.querySelector('.f-rep[value="weekly"]').checked;
+    if (!fOn.value || !fOff.value) { fErr.textContent = "켜는 시각과 끄는 시각을 입력하세요."; return; }
+    const [onH, onM] = fOn.value.split(":").map(Number);
+    const [offH, offM] = fOff.value.split(":").map(Number);
+    if (onH === offH && onM === offM) { fErr.textContent = "켜는 시각과 끄는 시각이 같을 수 없습니다."; return; }
+
+    let days = 0, startDate = 0, endDate = 0;
+    if (weekly) {
+      el.querySelectorAll(".f-dow").forEach(cb => { if (cb.checked) days |= Number(cb.value); });
+      if (days === 0) { fErr.textContent = "매주 반복은 요일을 하나 이상 선택하세요."; return; }
+      startDate = dateInputToNum(fStart.value);
+      endDate = dateInputToNum(fEnd.value);
+    } else {
+      if (!fOnceDate.value) { fErr.textContent = "실행할 날짜를 선택하세요."; return; }
+      startDate = dateInputToNum(fOnceDate.value);
+      endDate = 0;
+    }
+    if (startDate && endDate && startDate > endDate) { fErr.textContent = "시작일이 종료일보다 늦을 수 없습니다."; return; }
+
+    const hex = fColor.value.replace("#", "");
+    const r = parseInt(hex.slice(0, 2), 16), g = parseInt(hex.slice(2, 4), 16), b = parseInt(hex.slice(4, 6), 16);
+
+    const alarm = {
+      sid: d.editingSchedId || (String(Date.now()) + Math.random().toString(16).slice(2, 6)),
+      enabled: fEnabled.checked,
+      onH, onM, offH, offM, days, startDate, endDate, r, g, b
+    };
+
+    if (d.editingSchedId) {
+      const i = d.schedules.findIndex(x => x.sid === d.editingSchedId);
+      if (i >= 0) d.schedules[i] = alarm; else d.schedules.push(alarm);
+    } else {
+      if (d.schedules.length >= 8) { fErr.textContent = "예약은 최대 8개까지 등록할 수 있습니다."; return; }
+      d.schedules.push(alarm);
+    }
+    publishSchedules();
+    renderSchedules();
+    closeForm();
   });
 
   devices[id] = d;
   $("list").appendChild(el);
   paint(d);
+  renderSchedules();
   sortCards();
   updateSummary();
   return d;
@@ -231,6 +505,7 @@ function onMessage(topic, payload) {
   if (text === "") {
     if (kind === "online") removeDevice(id);
     else if (kind === "name" && devices[id]) { devices[id].name = ""; paint(devices[id]); sortCards(); }
+    else if (kind === "schedule" && devices[id]) { devices[id].schedules = []; devices[id].renderSchedules(); }
     return;
   }
 
@@ -252,6 +527,11 @@ function onMessage(topic, payload) {
     d.name = text;
     paint(d);
     sortCards();
+  } else if (kind === "schedule") {
+    // 다른 화면(휴대폰 등)에서 예약을 바꾼 경우에도 최신 목록을 반영한다.
+    // 지금 이 카드에서 폼을 열어 수정 중이면 화면이 튀지 않도록 목록만 갱신한다.
+    d.schedules = parseScheduleText(text);
+    d.renderSchedules();
   }
 }
 
@@ -284,7 +564,7 @@ $("login").addEventListener("submit", e => {
   client.on("connect", () => {
     setChip($("chipBroker"), "브로커: 연결됨", "ok");
     updateSummary();
-    client.subscribe(["led/+/online", "led/+/state", "led/+/name"]);
+    client.subscribe(["led/+/online", "led/+/state", "led/+/name", "led/+/schedule"]);
     $("pass").value = "";  // 비밀번호는 화면에 남기지 않는다
     showPanel(true);
   });
